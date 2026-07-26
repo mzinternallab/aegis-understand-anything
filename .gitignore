@@ -1,6 +1,13 @@
 node_modules
 dist
+# Understand-Anything analysis output. NIST SP 800-53 Rev.5 SI-12 (Information
+# Handling and Retention): derived analysis artifacts are local state, not
+# source. Committing them leaks internal design detail from private code and —
+# because the graph is the file-content allow-list and config.json gates the
+# auto-update hooks — turns repository data into a security-relevant input.
+# Both the current (.ua) and legacy (.understand-anything) directory names.
 .understand-anything
+.ua/
 *.tsbuildinfo
 .DS_Store
 .env
@@ -19,3 +26,5 @@ venv/
 *.pyo
 Thumbs.db
 *.tgz
+# Node.js compile cache (build artifact, never source)
+node-compile-cache/

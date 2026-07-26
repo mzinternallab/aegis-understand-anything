@@ -224,7 +224,10 @@ function Cmd-Install([string]$Id) {
             name        = 'understand'
             description = 'Analyze codebase into interactive knowledge graph — Understand Anything'
             prompt      = ConvertTo-FileUri (Join-Path $pluginRoot 'skills\understand\SKILL.md')
-            tools       = @('read', 'write', 'shell', 'grep', 'glob', 'code', 'subagent')
+            # NIST SP 800-53 Rev.5 AC-6 (Least Privilege), CM-7 (Least Functionality).
+            # 'subagent' (agent fan-out over untrusted content) and 'code'
+            # (editing project source) are withheld; analysis needs neither.
+            tools       = @('read', 'write', 'shell', 'grep', 'glob')
             resources   = $resources
         }
         $agentJson = Join-Path $agentsDir 'understand.json'

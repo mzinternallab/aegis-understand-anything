@@ -15,8 +15,37 @@ import {
 // Generate a one-time token when the server process starts.
 // This token is printed to the terminal and must be in the URL
 // to fetch knowledge-graph.json or diff-overlay.json.
-const ACCESS_TOKEN = process.env.UNDERSTAND_ACCESS_TOKEN || crypto.randomBytes(16).toString("hex");
+// NIST SP 800-53 Rev.5 IA-5(1) (Authenticator Management — complexity).
+// The generated default carries 128 bits of entropy. An operator-supplied
+// override must not silently weaken it: refuse to serve local source code
+// behind a short or guessable shared secret.
+const TOKEN_OVERRIDE = process.env.UNDERSTAND_ACCESS_TOKEN;
+if (TOKEN_OVERRIDE !== undefined && !/^[A-Za-z0-9_-]{32,128}$/.test(TOKEN_OVERRIDE)) {
+  throw new Error(
+    "UNDERSTAND_ACCESS_TOKEN must be 32-128 characters drawn from [A-Za-z0-9_-]. " +
+      "Unset it to use a securely generated 128-bit token.",
+  );
+}
+const ACCESS_TOKEN = TOKEN_OVERRIDE || crypto.randomBytes(16).toString("hex");
 const MAX_SOURCE_FILE_BYTES = 1024 * 1024;
+
+/**
+ * Constant-time bearer-token comparison.
+ *
+ * NIST SP 800-53 Rev.5 IA-5 (Authenticator Management), SC-13 (Cryptographic
+ * Protection). CWE-208 (Observable Timing Discrepancy): a plain `!==` on
+ * strings short-circuits at the first differing byte, leaking the token one
+ * byte at a time to anyone able to time responses on the loopback interface.
+ */
+export function tokenMatches(supplied: string | null, expected: string): boolean {
+  const a = Buffer.from(String(supplied ?? ""), "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) {
+    crypto.timingSafeEqual(b, b);
+    return false;
+  }
+  return crypto.timingSafeEqual(a, b);
+}
 
 // Legacy directory first — projects analyzed before the `.ua` rename keep
 // their existing `.understand-anything/` data.
@@ -159,19 +188,64 @@ function readSourceFile(url: URL) {
     return rejectFileRequest("File is not in the knowledge graph", 404);
   }
 
+  // ── Canonical-path enforcement (do not remove) ──────────────────────────
+  // NIST SP 800-53 Rev.5 AC-3 (Access Enforcement), SI-10 (Information Input
+  // Validation). CWE-59 (Link Following) / CWE-22 (Path Traversal).
+  //
+  // Every check above this line is LEXICAL: path.resolve() and path.relative()
+  // never touch the filesystem, whereas fs.statSync()/fs.readFileSync() DO
+  // follow symbolic links. A graph node naming an in-project symlink that
+  // points outside the project therefore satisfies the allow-list and is then
+  // read *through* the link, returning arbitrary local files to the browser.
+  //
+  // The knowledge graph is untrusted input (it can ship inside the analyzed
+  // repository), so allow-list membership is not by itself an access-control
+  // decision. Resolve the real inode, refuse symlinks, and re-verify
+  // containment against canonical paths. Mirrors bin/viewer.mjs, and matches
+  // the lstat rejection scan-project.mjs already applies when building graphs.
+  let linkStat: fs.Stats;
+  try {
+    linkStat = fs.lstatSync(absoluteFile);
+  } catch {
+    return rejectFileRequest("File not found", 404);
+  }
+  if (linkStat.isSymbolicLink()) {
+    return rejectFileRequest("Symbolic links are not served", 403);
+  }
+
+  let realRoot: string;
+  let realFile: string;
+  try {
+    realRoot = fs.realpathSync(projectRoot);
+    realFile = fs.realpathSync(absoluteFile);
+  } catch {
+    return rejectFileRequest("File not found", 404);
+  }
+  const realRelative = path.relative(realRoot, realFile);
+  if (
+    !realRelative ||
+    realRelative === ".." ||
+    realRelative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(realRelative)
+  ) {
+    return rejectFileRequest("Path must stay inside the project", 403);
+  }
+
   let stat: fs.Stats;
   try {
-    stat = fs.statSync(absoluteFile);
+    stat = fs.statSync(realFile);
   } catch {
     return rejectFileRequest("File not found", 404);
   }
 
+  // Regular files only: FIFOs and device nodes can block the event loop or
+  // stream unbounded data (NIST SP 800-53 Rev.5 SC-5, DoS Protection).
   if (!stat.isFile()) return rejectFileRequest("Path is not a file");
   if (stat.size > MAX_SOURCE_FILE_BYTES) {
     return rejectFileRequest("File is too large to preview", 413);
   }
 
-  const buffer = fs.readFileSync(absoluteFile);
+  const buffer = fs.readFileSync(realFile);
   if (buffer.includes(0)) return rejectFileRequest("Binary files cannot be previewed", 415);
 
   const content = buffer.toString("utf8");
@@ -269,7 +343,7 @@ export function createDashboardDataMiddleware(
 
     res.setHeader("Cache-Control", "no-store");
 
-    if (url.searchParams.get("token") !== accessToken) {
+    if (!tokenMatches(url.searchParams.get("token"), accessToken)) {
       sendJson(res, 403, { error: "Forbidden: missing or invalid token" });
       return;
     }
@@ -297,9 +371,38 @@ const config: DashboardViteConfig = {
 
   // FIX 1 — bind only to localhost, not 0.0.0.0
   // This blocks access from any other device on the same LAN / WiFi.
+  //
+  // The cors/allowedHosts/fs settings below are pinned EXPLICITLY rather than
+  // inherited from Vite's defaults. This server exposes local source code, and
+  // the dependency is caret-ranged (`vite: ^6.4.2`), so a future minor upgrade
+  // must not be able to silently relax the posture.
+  // NIST SP 800-53 Rev.5 SC-7 (Boundary Protection), CM-6 (Configuration
+  // Settings), CM-7 (Least Functionality). CISA Secure by Design: secure defaults.
   server: {
     host: "127.0.0.1",
     port: 5173,
+    // Reject cross-origin reads outright: no web page should be able to pull
+    // graph or file content out of the dev server.
+    cors: false,
+    // Defeats DNS rebinding — only these Host headers are honoured.
+    allowedHosts: ["127.0.0.1", "localhost"],
+    fs: {
+      strict: true,
+      allow: [path.resolve(__dirname)],
+      // Defence in depth for the /@fs/ route: never serve credential material
+      // or git internals even if something above is misconfigured.
+      deny: [
+        "**/.env",
+        "**/.env.*",
+        "**/*.pem",
+        "**/*.key",
+        "**/id_rsa",
+        "**/id_ed25519",
+        "**/.npmrc",
+        "**/.netrc",
+        "**/.git/**",
+      ],
+    },
     open: `/?token=${ACCESS_TOKEN}`,
   },
 
@@ -370,14 +473,24 @@ const config: DashboardViteConfig = {
             pathname === "/config.json" ||
             pathname === "/file-content.json";
 
+          // Baseline response hardening on every route.
+          // NIST SP 800-53 Rev.5 SC-7 (Boundary Protection), SC-18 (Mobile Code).
+          // no-referrer keeps the bootstrap `?token=` out of the Referer header
+          // on outbound requests; the frame/sniff headers bound the blast radius
+          // of any future rendering regression.
+          res.setHeader("Referrer-Policy", "no-referrer");
+          res.setHeader("X-Content-Type-Options", "nosniff");
+          res.setHeader("X-Frame-Options", "DENY");
+
           if (!isProtectedEndpoint) {
             next();
             return;
           }
 
           // FIX 3 — require the one-time token on all data endpoints.
-          // Requests without a matching ?token= get a 403.
-          if (url.searchParams.get("token") !== ACCESS_TOKEN) {
+          // Requests without a matching ?token= get a 403. Compared in constant
+          // time (NIST SP 800-53 Rev.5 IA-5, SC-13; CWE-208).
+          if (!tokenMatches(url.searchParams.get("token"), ACCESS_TOKEN)) {
             sendJson(res, 403, { error: "Forbidden: missing or invalid token" });
             return;
           }

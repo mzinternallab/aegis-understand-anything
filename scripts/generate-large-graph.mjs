@@ -287,6 +287,22 @@ const graph = {
 const outDir = resolve(uaDir(process.cwd()));
 mkdirSync(outDir, { recursive: true });
 const outPath = resolve(outDir, "knowledge-graph.json");
+
+// ── Refuse to clobber a real analysis ────────────────────────────────────
+// NIST SP 800-53 Rev.5 CP-9 (System Backup), SI-12 (Information Handling and
+// Retention). This is a synthetic-data generator for performance testing, but
+// it writes to the same filename a real /understand run produces. Run from the
+// wrong directory it would silently destroy an expensive analysis, so require
+// an explicit --force to overwrite.
+if (existsSync(outPath) && !args.includes("--force")) {
+  console.error(
+    `Refusing to overwrite an existing knowledge graph at:\n  ${outPath}\n\n` +
+    `This script generates SYNTHETIC data for performance testing and would\n` +
+    `destroy a real analysis. Pass --force if that is what you intend.`,
+  );
+  process.exit(1);
+}
+
 writeFileSync(outPath, JSON.stringify(graph, null, 2));
 
 console.log(`Generated knowledge graph${MESSY ? " (messy mode)" : ""}:`);

@@ -294,8 +294,13 @@ Perform lightweight validation (no graph-reviewer agent):
 
 4. Clean up intermediate files:
    ```bash
+   # NIST SP 800-53 Rev.5 SI-10 (Input Validation). The guard must validate the
+   # variable that is actually interpolated into the path. Testing $PROJECT_ROOT
+   # while deleting "$UA_DIR/intermediate" cannot catch the failure it was
+   # written for (an unresolved $UA_DIR expanding to "/intermediate").
+   : "${UA_DIR:?UA_DIR is unset - re-resolve it before cleanup}"
    INTERMEDIATE_DIR="$UA_DIR/intermediate"
-   if [ -n "$PROJECT_ROOT" ] && [ -d "$INTERMEDIATE_DIR" ]; then
+   if [ -n "$UA_DIR" ] && [ -d "$INTERMEDIATE_DIR" ]; then
      rm -rf "$INTERMEDIATE_DIR"
    fi
    ```

@@ -64,10 +64,13 @@ describe("getChangedFiles", () => {
     const result = getChangedFiles("/project", "abc123");
 
     expect(result).toEqual(["src/index.ts", "src/utils.ts"]);
+    // --end-of-options prevents git from reinterpreting a revision that begins
+    // with '-' as an option (security assessment F-08 / CWE-88), and the
+    // timeout/maxBuffer bounds keep a pathological repo from hanging the caller.
     expect(mockedExecFileSync).toHaveBeenCalledWith(
       "git",
-      ["diff", "abc123..HEAD", "--name-only"],
-      { cwd: "/project", encoding: "utf-8" },
+      ["diff", "--name-only", "--end-of-options", "abc123..HEAD"],
+      expect.objectContaining({ cwd: "/project", encoding: "utf-8" }),
     );
   });
 

@@ -15,13 +15,14 @@
   "files": [
     "bin",
     "dist",
-    "README.md"
+    "README.md",
+    "viewer-asset.sha256"
   ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "build": "node build.mjs",
-    "pack:release": "node build.mjs && npm pack"
+    "pack:release": "node build.mjs && npm pack && node emit-asset-digest.mjs"
   }
 }

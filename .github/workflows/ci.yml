@@ -17,13 +17,42 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege GITHUB_TOKEN.
+# NIST SP 800-53 Rev.5 AC-6 (Least Privilege), CM-7 (Least Functionality).
+# GitHub hardening guidance for Actions.
+#
+# Without an explicit block the token inherits the repository/organisation
+# default, which in many orgs is still write-all. This job installs
+# dependencies from the registry and executes repository test code, so a
+# malicious dependency build script or injected test could read a write-capable
+# token straight out of the runner environment and push commits, edit workflows,
+# or replace release assets. Read-only is all CI needs.
+#
+# deploy-homepage.yml already declares its permissions explicitly; this brings
+# CI in line.
+permissions:
+  contents: read
+
 jobs:
   ci:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # ACTION PINNING (outstanding — see docs/security/2026-07-25-security-assessment.md, F-08).
+    # CISA/NSA "Securing the Software Supply Chain"; NIST SP 800-218 PO.3.2 call
+    # for immutable references. The `@vN` tags below are MUTABLE: whoever
+    # controls the action repo can repoint a tag at new code that then runs with
+    # this workflow's token and secrets.
+    #
+    # To pin (do not guess a SHA — resolve each one):
+    #   gh api repos/actions/checkout/git/ref/tags/v7.0.0 --jq .object.sha
+    # then rewrite as:
+    #   - uses: actions/checkout@<40-char-sha>  # v7.0.0
+    # and enable Dependabot for "github-actions" so the pins stay current.
     steps:
       - uses: actions/checkout@v7
 

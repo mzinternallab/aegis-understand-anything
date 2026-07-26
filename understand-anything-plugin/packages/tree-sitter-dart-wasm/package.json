@@ -4,6 +4,10 @@
   "type": "module",
   "description": "Vendored tree-sitter-dart WASM grammar built with the modern dylink.0 ABI for use with web-tree-sitter@^0.26.",
   "main": "tree-sitter-dart.wasm",
-  "files": ["tree-sitter-dart.wasm", "BUILD.md"],
+  "files": [
+    "tree-sitter-dart.wasm",
+    "BUILD.md",
+    "SHA256SUMS"
+  ],
   "license": "MIT"
 }

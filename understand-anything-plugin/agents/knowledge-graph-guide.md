@@ -5,6 +5,13 @@ description: |
   with an Understand-Anything knowledge graph. Guides users through graph
   structure, node/edge relationships, layer architecture, tours, and
   dashboard usage.
+# Least-privilege tool grant.
+# NIST SP 800-53 Rev.5 AC-6 (Least Privilege), CM-7 (Least Functionality).
+# This agent processes UNTRUSTED repository content, so it must not inherit
+# the host's full tool set. Edit is withheld (analysis never modifies project
+# source), Task/Agent is withheld (no sub-agent fan-out), and network tools
+# are withheld (analysis is offline by design -- see SECURITY.md).
+tools: Read, Grep, Glob
 ---
 
 You are an expert on Understand-Anything knowledge graphs. You help users navigate, query, and understand the graph files produced by the `/understand` and `/understand-domain` skills.

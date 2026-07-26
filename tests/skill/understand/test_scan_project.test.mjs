@@ -410,7 +410,12 @@ describe('scan-project.mjs — category assignment (project-scanner.md Step 4)',
   // for `.env.local` — neither hits CATEGORY_BY_EXT['.env']. Dotfile-style
   // configs were falling through to `code` / `unknown`. Caught by Codex
   // review on PR #204.
-  it('dotfile configs (.env, .env.local, .env.production) map to config + env language', () => {
+  it('excludes credential-bearing dotenv files from the scan entirely', () => {
+    // Security assessment F-05: .env / .env.local / .env.production routinely
+    // hold live secrets. They are excluded by DEFAULT_IGNORE_PATTERNS so their
+    // contents can never reach an LLM prompt or be summarised into a graph
+    // that is later served over HTTP and often committed.
+    // NIST SP 800-53 Rev.5 SC-28, SI-12.
     projectRoot = setupTree({
       '.env': 'API_KEY=abc\n',
       '.env.local': 'LOCAL=1\n',
@@ -419,11 +424,20 @@ describe('scan-project.mjs — category assignment (project-scanner.md Step 4)',
     const r = runScript(projectRoot);
     expect(r.status).toBe(0);
     for (const p of ['.env', '.env.local', '.env.production']) {
-      expect(byPath(r.output, p).fileCategory).toBe('config');
-      // LANGUAGE_BY_EXT['.env'] -> 'config' (the language id itself; not
-      // a typo — the language for env files is the 'config' bucket).
-      expect(byPath(r.output, p).language).toBe('config');
+      expect(byPath(r.output, p), `${p} must not be scanned`).toBeUndefined();
     }
+  });
+
+  it('still analyses .env.example and maps it to config + env language', () => {
+    // .env.example is documentation by convention and carries placeholders, so
+    // it is negated back in and must keep its category/language mapping.
+    projectRoot = setupTree({ '.env.example': 'API_KEY=<your-key>\n' });
+    const r = runScript(projectRoot);
+    expect(r.status).toBe(0);
+    expect(byPath(r.output, '.env.example').fileCategory).toBe('config');
+    // LANGUAGE_BY_EXT['.env'] -> 'config' (the language id itself; not
+    // a typo — the language for env files is the 'config' bucket).
+    expect(byPath(r.output, '.env.example').language).toBe('config');
   });
 });
 

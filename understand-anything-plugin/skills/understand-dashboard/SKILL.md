@@ -106,8 +106,47 @@ Start the Understand Anything dashboard to visualize the knowledge graph for the
    : "${PROJECT_DIR:?Run step 1 first so PROJECT_DIR is set}"
    PLUGIN_VERSION=$(node -p "require('$PLUGIN_ROOT/package.json').version")
    VIEWER_URL="https://github.com/Egonex-AI/Understand-Anything/releases/download/v${PLUGIN_VERSION}/understand-anything-viewer.tgz"
-   npx --yes "$VIEWER_URL" "$PROJECT_DIR"
+
+   # NIST SP 800-218 PS.2 / PO.3.2 -- verify artifact integrity BEFORE execution.
+   # CISA/NSA "Securing the Software Supply Chain" (Developers), artifact integrity.
+   #
+   # `npx --yes <url>` downloads and RUNS code with no prompt. The URL is
+   # version-pinned but a GitHub release asset is mutable: anyone with repo
+   # write access (or a leaked Actions token / maintainer PAT) can replace the
+   # tarball at the same tag. Without a checksum every user of that version
+   # silently executes the replacement. The expected digest ships inside the
+   # plugin, so it is only as trustworthy as the plugin install itself -- which
+   # is exactly the trust boundary we want.
+   EXPECTED_SHA_FILE="$PLUGIN_ROOT/packages/viewer/viewer-asset.sha256"
+   if [ ! -f "$EXPECTED_SHA_FILE" ]; then
+     echo "No pinned viewer digest at $EXPECTED_SHA_FILE — skipping the fast path." >&2
+     echo "Falling back to the local build (steps 5-6)." >&2
+   else
+     TARBALL=$(mktemp -t ua-viewer-XXXXXX.tgz) || exit 1
+     if curl -fsSL "$VIEWER_URL" -o "$TARBALL"; then
+       ACTUAL_SHA=$(shasum -a 256 "$TARBALL" | cut -d' ' -f1)
+       EXPECTED_SHA=$(tr -d '[:space:]' < "$EXPECTED_SHA_FILE")
+       if [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; then
+         npx --yes "$TARBALL" "$PROJECT_DIR"
+       else
+         echo "INTEGRITY CHECK FAILED for $VIEWER_URL" >&2
+         echo "  expected: $EXPECTED_SHA" >&2
+         echo "  actual:   $ACTUAL_SHA" >&2
+         echo "Refusing to execute. Report this — a release asset may have been replaced." >&2
+         rm -f "$TARBALL"
+         exit 1
+       fi
+     else
+       echo "Could not download the viewer — falling back to the local build." >&2
+     fi
+     rm -f "$TARBALL"
+   fi
    ```
+
+   **If the integrity check fails, do not fall back to the local build and do
+   not retry — stop and report it to the user.** A digest mismatch means the
+   published asset no longer matches what this plugin version expects, which is
+   a supply-chain signal, not a transient error.
    Run this in the background. It prints the same `🔑  Dashboard URL` line as the dev server:
    - If the line appears, **skip steps 5-6** and continue at step 7.
    - If the process exits without printing it (no release asset for this version, or no network), fall back to steps 5-6.
@@ -116,12 +155,21 @@ Start the Understand Anything dashboard to visualize the knowledge graph for the
    ```bash
    : "${PLUGIN_ROOT:?Run step 3 first so PLUGIN_ROOT is set}"
    DASHBOARD_DIR="${DASHBOARD_DIR:-$PLUGIN_ROOT/packages/dashboard}"
-   cd "$DASHBOARD_DIR" && (pnpm install --frozen-lockfile 2>/dev/null || pnpm install)
+   # NIST SP 800-218 PO.3.2 / PS.3.1 -- deterministic dependency resolution.
+   # Fail closed: never silently re-resolve caret ranges against the registry.
+   cd "$DASHBOARD_DIR" || exit 1
+   if ! pnpm install --frozen-lockfile; then
+     echo "Dependency install failed against the committed lockfile." >&2
+     echo "Review the package.json / pnpm-lock.yaml diff before retrying." >&2
+     exit 1
+   fi
    ```
    Then ensure the core package is built (the dashboard depends on it):
    ```bash
    : "${PLUGIN_ROOT:?Run step 3 first so PLUGIN_ROOT is set}"
-   cd "$PLUGIN_ROOT" && pnpm --filter @understand-anything/core build
+   # NIST SP 800-218 PO.3.2 -- fail closed rather than continue on a broken build.
+   cd "$PLUGIN_ROOT" || exit 1
+   pnpm --filter @understand-anything/core build
    ```
 
 6. Fallback: start the Vite dev server pointing at the project's knowledge graph:

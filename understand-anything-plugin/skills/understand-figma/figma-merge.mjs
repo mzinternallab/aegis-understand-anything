@@ -25,7 +25,44 @@ if (!result.success || !result.data) {
 }
 
 const outDir = uaDir(projectRoot);
-writeFileSync(join(outDir, "knowledge-graph.json"), JSON.stringify(result.data, null, 2));
+const graphPath = join(outDir, "knowledge-graph.json");
+
+// ── Preserve an existing non-design graph before overwriting ──────────────
+// NIST SP 800-53 Rev.5 CP-9 (System Backup), SI-12 (Information Handling and
+// Retention).
+//
+// /understand and /understand-figma both write knowledge-graph.json. Running
+// the Figma skill in a project that has already been analyzed as code would
+// otherwise destroy that graph silently and irrecoverably — a full /understand
+// run can cost hundreds of thousands of tokens to reproduce. Snapshot anything
+// that is not already a design graph before replacing it.
+if (existsSync(graphPath)) {
+  try {
+    const prior = JSON.parse(readFileSync(graphPath, "utf8"));
+    const priorNodes = Array.isArray(prior?.nodes) ? prior.nodes : [];
+    const isDesignGraph =
+      priorNodes.length > 0 && priorNodes.every((n) => n?.kind === "design");
+    if (!isDesignGraph) {
+      const backup = `${graphPath}.bak-${Date.now()}`;
+      writeFileSync(backup, readFileSync(graphPath));
+      console.error(
+        `Existing non-design knowledge graph preserved at ${backup} ` +
+        `— /understand-figma is replacing knowledge-graph.json.`,
+      );
+    }
+  } catch {
+    // Unparseable existing graph: still keep a copy rather than dropping it.
+    const backup = `${graphPath}.bak-${Date.now()}`;
+    try {
+      writeFileSync(backup, readFileSync(graphPath));
+      console.error(`Unreadable existing graph preserved at ${backup}`);
+    } catch {
+      // Nothing further we can do; proceed rather than blocking the merge.
+    }
+  }
+}
+
+writeFileSync(graphPath, JSON.stringify(result.data, null, 2));
 writeFileSync(join(outDir, "meta.json"), JSON.stringify({
   lastAnalyzedAt: new Date().toISOString(),
   gitCommitHash: "",

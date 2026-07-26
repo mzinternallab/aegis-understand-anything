@@ -18,7 +18,8 @@
 
 set -euo pipefail
 
-REPO_URL="${UA_REPO_URL:-https://github.com/Egonex-AI/Understand-Anything.git}"
+DEFAULT_REPO_URL="https://github.com/Egonex-AI/Understand-Anything.git"
+REPO_URL="${UA_REPO_URL:-$DEFAULT_REPO_URL}"
 REPO_DIR="${UA_DIR:-$HOME/.understand-anything/repo}"
 PLUGIN_LINK="$HOME/.understand-anything-plugin"
 
@@ -90,7 +91,43 @@ prompt_platform() {
   printf '%s\n' "${ids[$((choice-1))]}"
 }
 
+# NIST SP 800-218 PS.2 (verify release integrity); CISA Secure by Design.
+# UA_REPO_URL redirects where skills, agents and hooks are fetched from — all
+# of which the user's agent host will later load and execute. Silently honouring
+# an override from the environment means anything that can set an env var can
+# substitute the entire plugin, so make it loud and require explicit intent.
+warn_custom_repo() {
+  if [[ -n "${UA_REPO_URL:-}" && "$UA_REPO_URL" != "$DEFAULT_REPO_URL" ]]; then
+    printf '\n' >&2
+    printf '!! UA_REPO_URL is overridden.\n' >&2
+    printf '!!   default: %s\n' "$DEFAULT_REPO_URL" >&2
+    printf '!!   using:   %s\n' "$UA_REPO_URL" >&2
+    printf '!! Skills, agents and hooks from this source will be loaded and\n' >&2
+    printf '!! executed by your agent host. Only continue if you trust it.\n' >&2
+    if [[ "${UA_ALLOW_CUSTOM_REPO:-0}" != "1" ]]; then
+      printf '!! Set UA_ALLOW_CUSTOM_REPO=1 to proceed.\n\n' >&2
+      exit 1
+    fi
+    printf '!! UA_ALLOW_CUSTOM_REPO=1 set — continuing.\n\n' >&2
+  fi
+}
+
+# NIST SP 800-53 Rev.5 CM-5, SI-12. `ln -sfn` silently replaces whatever sits at
+# the target path. install.ps1 already refuses to touch anything that is not a
+# link it created (see Remove-Reparse / New-Junction); this brings the POSIX
+# installer in line so a real user directory is never destroyed.
+safe_link() {
+  local target="$1" source="$2"
+  if [[ -e "$target" && ! -L "$target" ]]; then
+    printf 'Refusing to replace %s — it is a real file/directory, not a symlink.\n' "$target" >&2
+    printf 'Move or remove it first if you intended to link it.\n' >&2
+    return 1
+  fi
+  ln -sfn "$source" "$target"
+}
+
 clone_or_update() {
+  warn_custom_repo
   if [[ -d "$REPO_DIR/.git" ]]; then
     printf -- '→ Updating existing checkout at %s\n' "$REPO_DIR"
     git -C "$REPO_DIR" pull --ff-only
@@ -126,12 +163,12 @@ link_skills() {
     per-skill)
       local skill
       while IFS= read -r skill; do
-        ln -sfn "$root/$skill" "$target/$skill"
+        safe_link "$target/$skill" "$root/$skill" || continue
         printf '  ✓ %s → %s\n' "$target/$skill" "$root/$skill"
       done < <(list_skills)
       ;;
     folder)
-      ln -sfn "$root" "$target/understand-anything"
+      safe_link "$target/understand-anything" "$root" || exit 1
       printf '  ✓ %s → %s\n' "$target/understand-anything" "$root"
       ;;
     *)
@@ -206,12 +243,16 @@ cmd_install() {
       resources+="    \"file://$agent_md\""
     done < <(find "$plugin_root/agents" -maxdepth 1 -type f -name '*.md' | LC_ALL=C sort)
 
+    # NIST SP 800-53 Rev.5 AC-6 (Least Privilege), CM-7 (Least Functionality).
+    # Drop "subagent" (no agent fan-out over untrusted content) and "code"
+    # (analysis must never edit project source). "write" still covers the
+    # JSON artifacts the pipeline produces under the data directory.
     cat > "$HOME/.kiro/agents/understand.json" <<KIROEOF
 {
   "name": "understand",
   "description": "Analyze codebase into interactive knowledge graph — Understand Anything",
   "prompt": "file://$plugin_root/skills/understand/SKILL.md",
-  "tools": ["read", "write", "shell", "grep", "glob", "code", "subagent"],
+  "tools": ["read", "write", "shell", "grep", "glob"],
   "resources": [
 $resources
   ]

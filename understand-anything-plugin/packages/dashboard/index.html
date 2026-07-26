@@ -5,12 +5,51 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Understand Anything</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
+
+    <!--
+      Content Security Policy.
+
+      NIST SP 800-53 Rev.5 SC-7 (Boundary Protection), SC-18 (Mobile Code),
+      AC-4 (Information Flow Enforcement). CISA Secure by Design: secure defaults.
+
+      This dashboard renders UNTRUSTED input — knowledge-graph.json can ship
+      inside an analyzed repository, and markdown previews come from repository
+      files. The policy below is the backstop for that:
+
+        default-src 'none'     deny by default; every directive is opt-in
+        img-src 'self' data:   no remote beacons. A README containing
+                               `![](https://attacker/x.png)` cannot phone home,
+                               so viewing a file cannot be tracked remotely.
+        connect-src 'self'     graph/file fetches stay on the loopback origin
+        font-src 'self'        fonts are vendored under /fonts (see below)
+        frame-ancestors 'none' / base-uri 'none' / form-action 'none'
+                               no framing, no <base> hijack, no form exfiltration
+
+      'unsafe-inline' is required for style-src because Tailwind and the theme
+      engine assign CSS custom properties through element.style at runtime. It
+      is deliberately NOT granted to script-src, so inline script injection
+      stays blocked.
+
+      This file previously loaded fonts from fonts.googleapis.com and
+      fonts.gstatic.com. That contradicted the local-only guarantee in
+      SECURITY.md, disclosed usage timing and client IP to a third party, and
+      left the bootstrap `?token=` one referrer-policy change away from leaking.
+      The font files are now served from this origin.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none';
+               script-src 'self';
+               style-src 'self' 'unsafe-inline';
+               font-src 'self';
+               img-src 'self' data: blob:;
+               connect-src 'self';
+               worker-src 'self' blob:;
+               frame-ancestors 'none';
+               base-uri 'none';
+               form-action 'none'"
     />
+    <meta name="referrer" content="no-referrer" />
   </head>
   <body>
     <div id="root"></div>

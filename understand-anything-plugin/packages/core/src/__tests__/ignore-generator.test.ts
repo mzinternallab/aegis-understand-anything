@@ -324,19 +324,41 @@ describe("generateStarterIgnoreFile", () => {
 
   describe(".gitignore integration", () => {
     it("includes .gitignore patterns not covered by defaults", () => {
-      writeFileSync(join(testDir, ".gitignore"), ".env\nsecrets/\n*.pyc\n");
+      // NB: .env and secrets/ are now DEFAULT exclusions (security assessment
+      // F-05 — credential material must never reach an LLM prompt), so they are
+      // no longer valid examples of "not covered by defaults". Use patterns that
+      // genuinely are not defaults.
+      writeFileSync(join(testDir, ".gitignore"), "*.tmp\nscratch/\n*.pyc\n");
       const content = generateStarterIgnoreFile(testDir);
       expect(content).toContain("From .gitignore");
-      expect(content).toContain("# .env");
-      expect(content).toContain("# secrets/");
+      expect(content).toContain("# *.tmp");
+      expect(content).toContain("# scratch/");
       expect(content).toContain("# *.pyc");
     });
 
-    it("excludes .gitignore patterns already in defaults", () => {
-      writeFileSync(join(testDir, ".gitignore"), "node_modules/\ndist/\n.env\n");
+    it("treats credential patterns as defaults, not .gitignore suggestions", () => {
+      // Regression guard for F-05: .env / secrets/ are excluded unconditionally
+      // by DEFAULT_IGNORE_PATTERNS, so they must not be re-emitted as optional,
+      // commented-out suggestions a user could forget to enable.
+      writeFileSync(join(testDir, ".gitignore"), ".env\nsecrets/\n*.tmp\n");
       const content = generateStarterIgnoreFile(testDir);
-      // .env is not in defaults, should appear
-      expect(content).toContain("# .env");
+      const lines = content.split("\n");
+      const headerIdx = lines.findIndex((l) => l.includes("From .gitignore"));
+      const nextIdx = lines.findIndex((l, i) => i > headerIdx && l.startsWith("# ---"));
+      const patterns = lines
+        .slice(headerIdx + 1, nextIdx === -1 ? undefined : nextIdx)
+        .filter((l) => l.startsWith("# ") && !l.startsWith("# ---"))
+        .map((l) => l.slice(2));
+      expect(patterns).not.toContain(".env");
+      expect(patterns).not.toContain("secrets/");
+      expect(patterns).toContain("*.tmp");
+    });
+
+    it("excludes .gitignore patterns already in defaults", () => {
+      writeFileSync(join(testDir, ".gitignore"), "node_modules/\ndist/\n*.tmp\n");
+      const content = generateStarterIgnoreFile(testDir);
+      // *.tmp is not in defaults, should appear
+      expect(content).toContain("# *.tmp");
       // node_modules/ and dist/ are in defaults, should not appear in .gitignore section
       const gitignoreSection = content.split("From .gitignore")[1]?.split("---")[0] ?? "";
       expect(gitignoreSection).not.toContain("node_modules");
@@ -344,9 +366,9 @@ describe("generateStarterIgnoreFile", () => {
     });
 
     it("skips .gitignore comments and blank lines", () => {
-      writeFileSync(join(testDir, ".gitignore"), "# a comment\n\n.env\n  \n");
+      writeFileSync(join(testDir, ".gitignore"), "# a comment\n\n*.tmp\n  \n");
       const content = generateStarterIgnoreFile(testDir);
-      expect(content).toContain("# .env");
+      expect(content).toContain("# *.tmp");
       // Should not include the original comment as a pattern
       const gitignoreSection = content.split("From .gitignore")[1]?.split("---")[0] ?? "";
       expect(gitignoreSection).not.toContain("a comment");
@@ -354,7 +376,7 @@ describe("generateStarterIgnoreFile", () => {
 
     it("handles .gitignore with trailing-slash normalization for defaults", () => {
       // "dist" without trailing slash should still match "dist/" default
-      writeFileSync(join(testDir, ".gitignore"), "dist\ncoverage\n.env\n");
+      writeFileSync(join(testDir, ".gitignore"), "dist\ncoverage\n*.tmp\n");
       const content = generateStarterIgnoreFile(testDir);
       expect(content).toContain("From .gitignore");
       // Extract lines between the .gitignore header and the next section header
@@ -363,7 +385,7 @@ describe("generateStarterIgnoreFile", () => {
       const nextSectionIdx = lines.findIndex((l, i) => i > headerIdx && l.startsWith("# ---"));
       const sectionLines = lines.slice(headerIdx + 1, nextSectionIdx === -1 ? undefined : nextSectionIdx);
       const patterns = sectionLines.filter((l) => l.startsWith("# ") && !l.startsWith("# ---")).map((l) => l.slice(2));
-      expect(patterns).toContain(".env");
+      expect(patterns).toContain("*.tmp");
       expect(patterns).not.toContain("dist");
       expect(patterns).not.toContain("coverage");
     });

@@ -46,3 +46,27 @@ node -e "const b=require('fs').readFileSync('tree-sitter-swift.wasm'); console.l
 If `tree-sitter-swift` publishes a refreshed npm package with a compatible
 `tree-sitter-swift.wasm`, this workspace package can be deleted and
 `@understand-anything/core` can depend directly on the upstream grammar package.
+
+## Integrity
+
+NIST SP 800-218 (SSDF) PS.2 — verify the integrity of every included artifact.
+CISA/NSA *Securing the Software Supply Chain: Recommended Practices for
+Developers*.
+
+`SHA256SUMS` in this directory pins the digest of the committed `.wasm`, so a
+reviewer can confirm the binary has not been substituted without rebuilding it:
+
+```bash
+shasum -a 256 -c SHA256SUMS
+```
+
+After a legitimate rebuild (see "How to rebuild" above), regenerate it:
+
+```bash
+shasum -a 256 *.wasm > SHA256SUMS
+```
+
+The grammar executes inside the WebAssembly sandbox — no filesystem or network
+access — so the blast radius of a substituted binary is confined to
+manipulating extracted structure. That is still worth detecting: the knowledge
+graph downstream is what users read and trust.

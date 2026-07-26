@@ -83,7 +83,26 @@ if (!graphDir) {
   process.exit(1);
 }
 
-const ACCESS_TOKEN = process.env.UNDERSTAND_ACCESS_TOKEN || crypto.randomBytes(16).toString("hex");
+// Canonical project root, resolved once at startup. Every /file-content.json
+// request re-verifies containment against THIS path rather than the lexical
+// `projectRoot`, so an in-project symlink cannot be used to read outside the
+// project. See readSourceFile().
+// NIST SP 800-53 Rev.5 AC-3 (Access Enforcement); CWE-59 (Link Following).
+const PROJECT_ROOT_REAL = fs.realpathSync(projectRoot);
+
+// NIST SP 800-53 Rev.5 IA-5(1) (Authenticator Management — complexity).
+// The generated default carries 128 bits of entropy. An operator-supplied
+// override must not silently weaken that: refuse to serve local source code
+// behind a short or guessable shared secret.
+const TOKEN_OVERRIDE = process.env.UNDERSTAND_ACCESS_TOKEN;
+if (TOKEN_OVERRIDE !== undefined && !/^[A-Za-z0-9_-]{32,128}$/.test(TOKEN_OVERRIDE)) {
+  console.error(
+    "Error: UNDERSTAND_ACCESS_TOKEN must be 32-128 characters drawn from [A-Za-z0-9_-].\n" +
+    "Unset it to use a securely generated 128-bit token.",
+  );
+  process.exit(1);
+}
+const ACCESS_TOKEN = TOKEN_OVERRIDE || crypto.randomBytes(16).toString("hex");
 
 // ── Helpers (mirroring vite.config.ts) ────────────────────────────────────
 
@@ -91,6 +110,26 @@ function sendJson(res, statusCode, payload) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json");
   res.end(JSON.stringify(payload));
+}
+
+/**
+ * Constant-time bearer-token comparison.
+ *
+ * NIST SP 800-53 Rev.5 IA-5 (Authenticator Management), SC-13 (Cryptographic
+ * Protection). CWE-208 (Observable Timing Discrepancy): a plain `!==` on
+ * strings short-circuits at the first differing byte, which leaks the token
+ * one byte at a time to anyone who can time responses on the loopback
+ * interface. Compare in constant time and keep the timing profile flat even
+ * when the supplied length is wrong.
+ */
+function tokenMatches(supplied) {
+  const a = Buffer.from(String(supplied ?? ""), "utf8");
+  const b = Buffer.from(ACCESS_TOKEN, "utf8");
+  if (a.length !== b.length) {
+    crypto.timingSafeEqual(b, b);
+    return false;
+  }
+  return crypto.timingSafeEqual(a, b);
 }
 
 function normalizeGraphPath(filePath) {
@@ -173,16 +212,58 @@ function readSourceFile(url) {
     return reject("File is not in the knowledge graph", 404);
   }
 
-  let stat;
+  // ── Canonical-path enforcement (do not remove) ──────────────────────────
+  // NIST SP 800-53 Rev.5 AC-3 (Access Enforcement), SI-10 (Information Input
+  // Validation). CWE-59 (Link Following) / CWE-22 (Path Traversal).
+  //
+  // Every check above this line is LEXICAL: path.resolve() and path.relative()
+  // never touch the filesystem, whereas fs.statSync()/fs.readFileSync() DO
+  // follow symbolic links. A graph node naming an in-project symlink that
+  // points outside the project therefore satisfies the allow-list and is then
+  // read *through* the link, returning arbitrary local files to the browser.
+  //
+  // The knowledge graph is untrusted input — this viewer exists precisely to
+  // serve a graph committed inside the analyzed repository — so allow-list
+  // membership is not by itself an access-control decision. Resolve the real
+  // inode, refuse symlinks outright, and re-verify containment against
+  // canonical paths. scan-project.mjs applies the same lstat rejection when
+  // building the graph; this keeps the read path consistent with the scan path.
+  let linkStat;
   try {
-    stat = fs.statSync(absoluteFile);
+    linkStat = fs.lstatSync(absoluteFile);
   } catch {
     return reject("File not found", 404);
   }
+  if (linkStat.isSymbolicLink()) return reject("Symbolic links are not served", 403);
+
+  let realFile;
+  try {
+    realFile = fs.realpathSync(absoluteFile);
+  } catch {
+    return reject("File not found", 404);
+  }
+  const realRelative = path.relative(PROJECT_ROOT_REAL, realFile);
+  if (
+    !realRelative ||
+    realRelative === ".." ||
+    realRelative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(realRelative)
+  ) {
+    return reject("Path must stay inside the project", 403);
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(realFile);
+  } catch {
+    return reject("File not found", 404);
+  }
+  // Regular files only: FIFOs and device nodes can block the event loop or
+  // stream unbounded data (NIST SP 800-53 SC-5, Denial-of-Service Protection).
   if (!stat.isFile()) return reject("Path is not a file");
   if (stat.size > MAX_SOURCE_FILE_BYTES) return reject("File is too large to preview", 413);
 
-  const buffer = fs.readFileSync(absoluteFile);
+  const buffer = fs.readFileSync(realFile);
   if (buffer.includes(0)) return reject("Binary files cannot be previewed", 415);
 
   const content = buffer.toString("utf8");
@@ -324,12 +405,21 @@ const server = createServer((req, res) => {
     res.setHeader("Cache-Control", "no-store");
   }
 
+  // Baseline response hardening on every route.
+  // NIST SP 800-53 Rev.5 SC-7 (Boundary Protection), SC-18 (Mobile Code).
+  // no-referrer keeps the bootstrap `?token=` out of the Referer header on any
+  // outbound request; the frame/sniff headers contain the blast radius of any
+  // future rendering regression.
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+
   if (!PROTECTED.has(pathname)) {
     serveStatic(res, pathname);
     return;
   }
 
-  if (url.searchParams.get("token") !== ACCESS_TOKEN) {
+  if (!tokenMatches(url.searchParams.get("token"))) {
     sendJson(res, 403, { error: "Forbidden: missing or invalid token" });
     return;
   }
@@ -382,8 +472,19 @@ function listen(attemptPort, attemptsLeft) {
     console.log(`\n  Serving graph from ${graphDir}`);
     console.log(`  🔑  Dashboard URL: ${dashboardUrl}\n`);
     if (openBrowser) {
-      const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-      spawn(opener, [dashboardUrl], { shell: process.platform === "win32", stdio: "ignore", detached: true }).unref();
+      // NIST SP 800-53 Rev.5 SI-10 (Information Input Validation); CWE-78
+      // (OS Command Injection). The previous form passed the URL to `start`
+      // with { shell: true } on Windows, handing an operator-influenced value
+      // (UNDERSTAND_ACCESS_TOKEN feeds the URL) to cmd.exe for parsing. Use
+      // rundll32's FileProtocolHandler instead so no shell is involved on any
+      // platform and the URL is delivered as a single argv entry.
+      const [opener, openerArgs] =
+        process.platform === "darwin"
+          ? ["open", [dashboardUrl]]
+          : process.platform === "win32"
+            ? ["rundll32", ["url.dll,FileProtocolHandler", dashboardUrl]]
+            : ["xdg-open", [dashboardUrl]];
+      spawn(opener, openerArgs, { stdio: "ignore", detached: true }).unref();
     }
   });
 }

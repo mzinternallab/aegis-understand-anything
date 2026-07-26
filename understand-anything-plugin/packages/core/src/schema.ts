@@ -409,7 +409,30 @@ const FigmaMetaSchema = z.object({
   fileKey: z.string().optional(),
   nodeId: z.string().optional(),
   figmaType: z.string().optional(),
-  thumbnailUrl: z.string().optional(),
+  // NIST SP 800-53 Rev.5 SI-10 (Information Input Validation), SC-7 (Boundary
+  // Protection). The graph is untrusted input and this value is rendered as an
+  // <img src>, so an unvalidated string lets a crafted graph point the viewer's
+  // browser at an arbitrary URL.
+  //
+  // Scheme is validated here rather than host: Figma's image-render API returns
+  // pre-signed, expiring URLs on an object-store host (not *.figma.com), so a
+  // hostname allow-list would break legitimate thumbnails. Requiring https
+  // blocks javascript:/data:/file: and cleartext downgrade; the `img-src 'self'
+  // data: blob:` directive in index.html is the layer that actually prevents
+  // remote beacons, and it is deliberately strict — see the note there.
+  thumbnailUrl: z
+    .string()
+    .refine(
+      (value) => {
+        try {
+          return new URL(value).protocol === "https:";
+        } catch {
+          return false;
+        }
+      },
+      { message: "thumbnailUrl must be an absolute https URL" },
+    )
+    .optional(),
   dimensions: z.object({ width: z.number(), height: z.number() }).optional(),
   tokenKind: z.enum(["color", "type", "spacing", "effect", "grid"]).optional(),
   tokenValue: z.string().optional(),

@@ -115,7 +115,19 @@ Determine whether to run a full analysis or incremental update.
    fi
 
    if [ ! -f "$PLUGIN_ROOT/packages/core/dist/index.js" ]; then
-     cd "$PLUGIN_ROOT" && (pnpm install --frozen-lockfile 2>/dev/null || pnpm install) && pnpm --filter @understand-anything/core build
+     # NIST SP 800-218 PO.3.2 / PS.3.1 -- deterministic, verifiable dependency
+   # resolution. CISA/NSA Securing the Software Supply Chain: no silent
+   # re-resolution. The old `|| pnpm install` fallback fired on exactly the
+   # case --frozen-lockfile exists to catch, re-resolving every caret range
+   # against the live registry with the diagnostic suppressed.
+   cd "$PLUGIN_ROOT" || exit 1
+   if ! pnpm install --frozen-lockfile; then
+     echo "Dependency install failed against the committed lockfile." >&2
+     echo "package.json and pnpm-lock.yaml have likely diverged. Review the" >&2
+     echo "diff and run pnpm install manually before retrying." >&2
+     exit 1
+   fi
+   pnpm --filter @understand-anything/core build
    fi
    ```
 

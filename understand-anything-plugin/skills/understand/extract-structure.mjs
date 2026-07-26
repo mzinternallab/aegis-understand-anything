@@ -17,9 +17,9 @@
  */
 
 import { createRequire } from 'node:module';
-import { dirname, resolve, join } from 'node:path';
+import { dirname, resolve, isAbsolute, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import {
   analyzeFileWithOutcomes,
   buildResult as buildExtractResult,
@@ -51,6 +51,62 @@ try {
 }
 
 const { TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers } = core;
+
+// ---------------------------------------------------------------------------
+// Path containment
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a batch-supplied relative path against the canonical project root,
+ * returning the absolute path only if it provably stays inside that root and
+ * is a regular (non-symlink) file. Returns null otherwise.
+ *
+ * NIST SP 800-53 Rev.5 SI-10 (Information Input Validation), AC-3 (Access
+ * Enforcement). CWE-22 (Path Traversal), CWE-59 (Link Following).
+ *
+ * The lexical checks alone are not sufficient because readFileSync follows
+ * symlinks, so containment is re-verified against realpath — the same pattern
+ * the dashboard's /file-content.json endpoint uses.
+ *
+ * @param {string} rootReal canonical (realpath'd) project root
+ * @param {unknown} relPath path as supplied in the batch input JSON
+ * @returns {string|null} absolute path inside the root, or null if unsafe
+ */
+export function resolveInsideRoot(rootReal, relPath) {
+  if (typeof relPath !== 'string' || relPath.length === 0) return null;
+  if (relPath.includes('\0')) return null;
+  if (isAbsolute(relPath)) return null;
+
+  const abs = resolve(rootReal, relPath);
+
+  // Lexical containment first — cheap, and rejects the common '../' case
+  // before any filesystem call.
+  const lexRel = relative(rootReal, abs);
+  if (!lexRel || lexRel === '..' || lexRel.startsWith(`..${sep}`) || isAbsolute(lexRel)) {
+    return null;
+  }
+
+  // Reject symlinks outright, then confirm the canonical path is still inside.
+  let linkStat;
+  try {
+    linkStat = lstatSync(abs);
+  } catch {
+    return null;
+  }
+  if (linkStat.isSymbolicLink() || !linkStat.isFile()) return null;
+
+  let real;
+  try {
+    real = realpathSync(abs);
+  } catch {
+    return null;
+  }
+  const realRel = relative(rootReal, real);
+  if (!realRel || realRel === '..' || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
+    return null;
+  }
+  return real;
+}
 
 // ---------------------------------------------------------------------------
 // Main
@@ -88,8 +144,35 @@ async function main() {
     callGraph: { succeeded: 0, failed: 0, skipped: 0 },
   };
 
+  // Canonical project root — every batch path is re-verified against this.
+  // NIST SP 800-53 Rev.5 AC-3 (Access Enforcement).
+  let projectRootReal;
+  try {
+    projectRootReal = realpathSync(projectRoot);
+  } catch {
+    throw new Error(`projectRoot does not exist or is not readable: ${projectRoot}`);
+  }
+
   for (const file of batchFiles) {
-    const absolutePath = join(projectRoot, file.path);
+    // ── Path containment (do not remove) ──────────────────────────────────
+    // NIST SP 800-53 Rev.5 SI-10 (Information Input Validation), AC-3 (Access
+    // Enforcement). CWE-22 (Path Traversal) / CWE-59 (Link Following).
+    //
+    // `file.path` arrives from ua-file-analyzer-input-<n>.json, which is
+    // written by an LLM agent whose context contains untrusted repository
+    // content. A bare join() would happily escape the project on '../../..',
+    // and readFileSync follows symlinks. Treat every path in that file as
+    // hostile: reject absolute paths, NUL bytes, and symlinks, then confirm the
+    // canonical target still sits inside the project.
+    const absolutePath = resolveInsideRoot(projectRootReal, file.path);
+    if (absolutePath === null) {
+      process.stderr.write(
+        `Warning: extract-structure: ${String(file.path)} — path escapes the ` +
+        `project root or is a symlink — file skipped\n`,
+      );
+      filesSkipped.push(file.path);
+      continue;
+    }
 
     // Read file content
     let content;

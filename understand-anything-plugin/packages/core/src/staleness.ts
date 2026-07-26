@@ -366,11 +366,34 @@ export function getChangedFiles(
   projectDir: string,
   lastCommitHash: string,
 ): string[] {
+  // NIST SP 800-53 Rev.5 SI-10 (Information Input Validation).
+  // CWE-88 (Argument Injection). `lastCommitHash` typically originates from
+  // meta.json / knowledge-graph.json, which can ship inside an analyzed
+  // repository and is therefore untrusted. execFileSync avoids a shell, so
+  // command injection is not possible — but a value beginning with '-' is
+  // parsed by git as an OPTION rather than a revision. Validate the shape
+  // first, and pass --end-of-options so git cannot reinterpret it either way.
+  // (evaluateGraphFreshness() above already does this; this older entry point
+  // is brought in line with it.)
+  // 4 is git's minimum abbreviation length; 64 covers a full SHA-256 object id.
+  // The security property is the character class (hex only, so a value can
+  // never begin with '-' and be mistaken for an option), not the length.
+  if (!/^[0-9a-fA-F]{4,64}$/.test(lastCommitHash)) return [];
+
   try {
-    const output = execFileSync("git", ["diff", `${lastCommitHash}..HEAD`, "--name-only"], {
-      cwd: projectDir,
-      encoding: "utf-8",
-    });
+    const output = execFileSync(
+      "git",
+      ["diff", "--name-only", "--end-of-options", `${lastCommitHash}..HEAD`],
+      {
+        cwd: projectDir,
+        encoding: "utf-8",
+        // Bound the call so a pathological repository cannot hang the caller
+        // (NIST SP 800-53 Rev.5 SC-5, Denial-of-Service Protection).
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER_BYTES,
+        windowsHide: true,
+      },
+    );
     return parseChangedFiles(output);
   } catch {
     return [];

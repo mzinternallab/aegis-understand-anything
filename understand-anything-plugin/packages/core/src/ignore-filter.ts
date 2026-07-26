@@ -68,6 +68,55 @@ export const DEFAULT_IGNORE_PATTERNS: string[] = [
   ".prettierrc",
   ".eslintrc*",
   "*.log",
+
+  // ── Credential material ────────────────────────────────────────────────
+  // NIST SP 800-53 Rev.5 SC-28 (Protection of Information at Rest), SI-12
+  // (Information Handling and Retention), AC-4 (Information Flow Enforcement).
+  //
+  // Analyzed file contents are read into LLM prompts and their summaries are
+  // persisted into knowledge-graph.json, which is then served over HTTP and is
+  // frequently committed. Secrets must never enter that pipeline: once content
+  // leaves the host there is no way to recall it, so exclusion is the only
+  // reliable control.
+  //
+  // This matters even though scan-project.mjs prefers `git ls-files
+  // --exclude-standard` (which honours .gitignore): the recursive walker used
+  // when git is unavailable has no .gitignore awareness, and secrets committed
+  // by mistake are common enough that GitHub runs a scanning service for them.
+  //
+  // .env.example is negated back in — it is documentation by convention and
+  // carries placeholder values, which is useful context for analysis.
+  ".env",
+  ".env.*",
+  "!.env.example",
+  "!.env.sample",
+  "!.env.template",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
+  "*.jks",
+  "*.keystore",
+  "*.asc",
+  "*.gpg",
+  "id_rsa",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "*.ppk",
+  ".npmrc",
+  ".netrc",
+  ".pypirc",
+  ".htpasswd",
+  "credentials",
+  "credentials.json",
+  "service-account*.json",
+  "*.secret",
+  "*.secrets",
+  "secrets/",
+  ".secrets/",
+  ".aws/",
+  ".ssh/",
 ];
 
 export interface IgnoreFilter {
